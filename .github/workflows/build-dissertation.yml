@@ -3,6 +3,8 @@ name: Build Dissertation PDFs (to repo root)
 on:
   push:
     paths:
+      - 'Dissertation-Proposal-main/**.tex'
+      - 'Dissertation-Proposal-main/**.bib'
       - 'Dissertation-Proposal/**.tex'
       - 'Dissertation-Proposal/**.bib'
       - '**.sty'
@@ -10,6 +12,8 @@ on:
       - '.github/workflows/build-dissertation.yml'
   pull_request:
     paths:
+      - 'Dissertation-Proposal-main/**.tex'
+      - 'Dissertation-Proposal-main/**.bib'
       - 'Dissertation-Proposal/**.tex'
       - 'Dissertation-Proposal/**.bib'
       - '**.sty'
@@ -35,26 +39,48 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      # Find TeX roots under Dissertation-Proposal-main (files that declare \documentclass)
+      - name: Locate dissertation directory
+        id: locate
+        run: |
+          set -euo pipefail
+          echo "Top-level tree:"; ls -la
+
+          # Preferred names first
+          for d in "Dissertation-Proposal-main" "Dissertation-Proposal"; do
+            if [ -d "$d" ]; then
+              echo "TEX_DIR=$d" >> "$GITHUB_ENV"
+              echo "Found TEX_DIR=$d"
+              exit 0
+            fi
+          done
+
+          # Fallback: pick a dir containing a LaTeX root (\documentclass)
+          mapfile -t CANDIDATES < <(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | xargs -r -n1 dirname | sort -u)
+          if [ ${#CANDIDATES[@]} -eq 0 ]; then
+            echo "No LaTeX directories found." >&2
+            exit 1
+          fi
+          echo "TEX_DIR=${CANDIDATES[0]}" >> "$GITHUB_ENV"
+          echo "Falling back to TEX_DIR=${CANDIDATES[0]}"
+
       - name: Discover LaTeX roots
         id: discover
         run: |
           set -euo pipefail
-          cd "Dissertation-Proposal"
+          cd "$TEX_DIR"
           ROOTS="$(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | sed 's|^\./||')"
           if [ -z "$ROOTS" ]; then
-            echo "No LaTeX root files found in 'Dissertation-Proposal-main'." >&2
+            echo "No LaTeX root files found in $TEX_DIR." >&2
             exit 1
           fi
           printf 'ROOT_FILES<<EOF\n%s\nEOF\n' "$ROOTS" >> "$GITHUB_ENV"
           echo "Detected roots:"; echo "$ROOTS"
 
-      # Build with latexmk (PDFs land inside Dissertation-Proposal-main/)
       - name: Compile LaTeX (latexmk)
         uses: xu-cheng/latex-action@v2
         with:
           root_file: ${{ env.ROOT_FILES }}
-          working_directory: Dissertation-Proposal
+          working_directory: ${{ env.TEX_DIR }}
           args: -pdf -interaction=nonstopmode -file-line-error
           # Uncomment if needed:
           # latexmk_use_xelatex: true
@@ -63,15 +89,15 @@ jobs:
 
       - name: List produced PDFs
         run: |
-          ls -lh "Dissertation-Proposal || true
-          ls -lh "Dissertation-Proposal"/*.pdf || echo "No PDFs found."
+          ls -lh "${TEX_DIR}" || true
+          ls -lh "${TEX_DIR}"/*.pdf || echo "No PDFs found."
 
       - name: Upload PDFs (artifacts from source folder)
         uses: actions/upload-artifact@v4
         with:
           name: dissertation-pdfs
           path: |
-            Dissertation-Proposal/*.pdf
+            ${{ env.TEX_DIR }}/*.pdf
           if-no-files-found: warn
           retention-days: 14
 
@@ -88,26 +114,22 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Make sure we're up to date without index/worktree conflicts
           git fetch origin "$BRANCH"
           git checkout "$BRANCH"
           git -c rebase.autoStash=true pull --rebase origin "$BRANCH"
 
-          # Copy newly built PDFs to repo root and build a staged file list
           shopt -s nullglob
           COPIED=()
-          for f in "Dissertation-Proposal"/*.pdf; do
+          for f in "${TEX_DIR}"/*.pdf; do
             base="$(basename "$f")"
             cp -f "$f" "./$base"
             COPIED+=("$base")
           done
 
-          # Stage ONLY the copied PDFs
           if [ ${#COPIED[@]} -gt 0 ]; then
-            git add -- "${COPIED[@]}"
+            git add -- "${COPIED[@]}" || true
           fi
 
-          # Commit only if there are changes
           if git diff --cached --quiet; then
             echo "No root-level PDF changes to commit."
             exit 0
