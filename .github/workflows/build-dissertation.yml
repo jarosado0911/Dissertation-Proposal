@@ -7,6 +7,10 @@ on:
       - 'Dissertation-Proposal-main/**.bib'
       - 'Dissertation-Proposal/**.tex'
       - 'Dissertation-Proposal/**.bib'
+      - '*.tex'
+      - '*.bib'
+      - '**/*.tex'
+      - '**/*.bib'
       - '**.sty'
       - '**.cls'
       - '.github/workflows/build-dissertation.yml'
@@ -16,6 +20,10 @@ on:
       - 'Dissertation-Proposal-main/**.bib'
       - 'Dissertation-Proposal/**.tex'
       - 'Dissertation-Proposal/**.bib'
+      - '*.tex'
+      - '*.bib'
+      - '**/*.tex'
+      - '**/*.bib'
       - '**.sty'
       - '**.cls'
       - '.github/workflows/build-dissertation.yml'
@@ -50,8 +58,7 @@ jobs:
         id: locate
         run: |
           set -euo pipefail
-          echo "Top-level tree:"
-          ls -la
+          echo "Top-level tree:"; ls -la
 
           # Preferred names first
           for d in "Dissertation-Proposal-main" "Dissertation-Proposal"; do
@@ -62,14 +69,20 @@ jobs:
             fi
           done
 
-          # Fallback: pick a dir containing a LaTeX root (\documentclass)
+          # Fallback: pick a dir (or root) containing a LaTeX root (\documentclass)
           mapfile -t CANDIDATES < <(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | xargs -r -n1 dirname | sort -u)
           if [ ${#CANDIDATES[@]} -eq 0 ]; then
             echo "No LaTeX directories with \\documentclass found." >&2
             exit 1
           fi
-          echo "TEX_DIR=${CANDIDATES[0]}" >> "$GITHUB_ENV"
-          echo "Falling back to TEX_DIR=${CANDIDATES[0]}"
+          # If the root (.) is among candidates, prefer it
+          for c in "." "${CANDIDATES[@]}"; do
+            if [ -d "$c" ]; then
+              echo "TEX_DIR=$c" >> "$GITHUB_ENV"
+              echo "Falling back to TEX_DIR=$c"
+              exit 0
+            fi
+          done
 
       - name: Discover LaTeX roots
         id: discover
@@ -82,8 +95,7 @@ jobs:
             exit 1
           fi
           printf 'ROOT_FILES<<EOF\n%s\nEOF\n' "$ROOTS" >> "$GITHUB_ENV"
-          echo "Detected roots:"
-          echo "$ROOTS"
+          echo "Detected roots:"; echo "$ROOTS"
 
       - name: Compile LaTeX (latexmk)
         uses: xu-cheng/latex-action@v2
@@ -110,8 +122,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Rebase first with autoStash (prevents index/working tree conflicts),
-      # then copy PDFs to the repo root, stage only those, commit, and push.
+      # Rebase first with autoStash, then copy (if needed) or just stage PDFs at root, commit, and push.
       - name: Commit and push PDFs to repo root
         if: startsWith(github.ref, 'refs/heads/')
         env:
@@ -128,12 +139,10 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Clean pull; autostash avoids "index contains uncommitted changes"
           git fetch origin "$BRANCH"
           git checkout "$BRANCH"
           git -c rebase.autoStash=true pull --rebase origin "$BRANCH"
 
-          # Ensure PDFs exist
           shopt -s nullglob
           PDFS=( "${TEX_DIR}"/*.pdf )
           if [ ${#PDFS[@]} -eq 0 ]; then
@@ -144,20 +153,32 @@ jobs:
           echo "Built PDFs:"
           ls -lh -- "${PDFS[@]}"
 
-          # Copy PDFs to repo root
-          COPIED=()
-          for f in "${PDFS[@]}"; do
-            base="$(basename "$f")"
-            cp -f "$f" "./$base"
-            COPIED+=("$base")
-          done
+          COPIED_OR_STAGED=()
 
-          echo "Copied to repo root:"
-          ls -lh -- "${COPIED[@]}"
+          if [ "${TEX_DIR}" = "." ]; then
+            # Already at repo root: do NOT copy, just stage the files
+            for f in "${PDFS[@]}"; do
+              base="$(basename "$f")"
+              COPIED_OR_STAGED+=("$base")
+            done
+          else
+            # Copy to repo root (skip if source == destination)
+            for f in "${PDFS[@]}"; do
+              base="$(basename "$f")"
+              if [ -e "./$base" ] && [ "$f" -ef "./$base" ]; then
+                echo "Skipping copy for $f (already at repo root)"
+              else
+                cp -f "$f" "./$base"
+              fi
+              COPIED_OR_STAGED+=("$base")
+            done
+          fi
 
-          # Stage only the copied PDFs
-          if [ ${#COPIED[@]} -gt 0 ]; then
-            git add -- "${COPIED[@]}" || true
+          echo "Files to stage at repo root:"
+          printf ' - %s\n' "${COPIED_OR_STAGED[@]}"
+
+          if [ ${#COPIED_OR_STAGED[@]} -gt 0 ]; then
+            git add -- "${COPIED_OR_STAGED[@]}" || true
           fi
 
           echo "Git status after staging:"
