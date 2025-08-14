@@ -20,6 +20,13 @@ on:
       - '**.cls'
       - '.github/workflows/build-dissertation.yml'
   workflow_dispatch:
+    inputs:
+      force_commit:
+        description: 'Commit even if PDFs are unchanged'
+        required: false
+        type: choice
+        default: 'false'
+        options: ['false','true']
 
 permissions:
   contents: write
@@ -43,7 +50,8 @@ jobs:
         id: locate
         run: |
           set -euo pipefail
-          echo "Top-level tree:"; ls -la
+          echo "Top-level tree:"
+          ls -la
 
           # Preferred names first
           for d in "Dissertation-Proposal-main" "Dissertation-Proposal"; do
@@ -57,7 +65,7 @@ jobs:
           # Fallback: pick a dir containing a LaTeX root (\documentclass)
           mapfile -t CANDIDATES < <(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | xargs -r -n1 dirname | sort -u)
           if [ ${#CANDIDATES[@]} -eq 0 ]; then
-            echo "No LaTeX directories found." >&2
+            echo "No LaTeX directories with \\documentclass found." >&2
             exit 1
           fi
           echo "TEX_DIR=${CANDIDATES[0]}" >> "$GITHUB_ENV"
@@ -74,7 +82,8 @@ jobs:
             exit 1
           fi
           printf 'ROOT_FILES<<EOF\n%s\nEOF\n' "$ROOTS" >> "$GITHUB_ENV"
-          echo "Detected roots:"; echo "$ROOTS"
+          echo "Detected roots:"
+          echo "$ROOTS"
 
       - name: Compile LaTeX (latexmk)
         uses: xu-cheng/latex-action@v2
@@ -101,38 +110,69 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Rebase first (with autoStash to avoid 'index contains uncommitted changes'),
-      # then copy PDFs to the repo root (.), stage only those, commit, and push.
+      # Rebase first with autoStash (prevents index/working tree conflicts),
+      # then copy PDFs to the repo root, stage only those, commit, and push.
       - name: Commit and push PDFs to repo root
         if: startsWith(github.ref, 'refs/heads/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_COMMIT: ${{ inputs.force_commit }}
         run: |
           set -euo pipefail
+
+          echo "TEX_DIR=${TEX_DIR}"
+          echo "ROOT_FILES:"
+          printf '%s\n' "${ROOT_FILES:-<none>}"
 
           BRANCH="${GITHUB_REF#refs/heads/}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Clean pull; autostash avoids "index contains uncommitted changes"
           git fetch origin "$BRANCH"
           git checkout "$BRANCH"
           git -c rebase.autoStash=true pull --rebase origin "$BRANCH"
 
+          # Ensure PDFs exist
           shopt -s nullglob
+          PDFS=( "${TEX_DIR}"/*.pdf )
+          if [ ${#PDFS[@]} -eq 0 ]; then
+            echo "::error::No PDFs were produced in ${TEX_DIR}. Check the LaTeX build logs above."
+            exit 1
+          fi
+
+          echo "Built PDFs:"
+          ls -lh -- "${PDFS[@]}"
+
+          # Copy PDFs to repo root
           COPIED=()
-          for f in "${TEX_DIR}"/*.pdf; do
+          for f in "${PDFS[@]}"; do
             base="$(basename "$f")"
             cp -f "$f" "./$base"
             COPIED+=("$base")
           done
 
+          echo "Copied to repo root:"
+          ls -lh -- "${COPIED[@]}"
+
+          # Stage only the copied PDFs
           if [ ${#COPIED[@]} -gt 0 ]; then
             git add -- "${COPIED[@]}" || true
           fi
 
+          echo "Git status after staging:"
+          git status --porcelain || true
+
+          # Commit only if there are changes, unless force_commit=true (workflow_dispatch only)
           if git diff --cached --quiet; then
-            echo "No root-level PDF changes to commit."
-            exit 0
+            if [ "${FORCE_COMMIT:-false}" = "true" ]; then
+              git commit --allow-empty -m "chore(dissertation): no content changes [skip ci]"
+              git push --force-with-lease origin "$BRANCH"
+              exit 0
+            else
+              echo "No root-level PDF changes to commit."
+              exit 0
+            fi
           fi
 
           git commit -m "chore(dissertation): update PDFs at repo root [skip ci]"
