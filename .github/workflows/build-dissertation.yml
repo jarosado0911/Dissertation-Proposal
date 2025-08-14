@@ -3,15 +3,15 @@ name: Build Dissertation PDFs (to repo root)
 on:
   push:
     paths:
-      - 'Dissertation-Proposal-main/**.tex'
-      - 'Dissertation-Proposal-main/**.bib'
+      - 'Dissertation-Proposal/**.tex'
+      - 'Dissertation-Proposal/**.bib'
       - '**.sty'
       - '**.cls'
       - '.github/workflows/build-dissertation.yml'
   pull_request:
     paths:
-      - 'Dissertation-Proposal-main/**.tex'
-      - 'Dissertation-Proposal-main/**.bib'
+      - 'Dissertation-Proposal/**.tex'
+      - 'Dissertation-Proposal/**.bib'
       - '**.sty'
       - '**.cls'
       - '.github/workflows/build-dissertation.yml'
@@ -40,7 +40,7 @@ jobs:
         id: discover
         run: |
           set -euo pipefail
-          cd "Dissertation-Proposal-main"
+          cd "Dissertation-Proposal"
           ROOTS="$(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | sed 's|^\./||')"
           if [ -z "$ROOTS" ]; then
             echo "No LaTeX root files found in 'Dissertation-Proposal-main'." >&2
@@ -54,7 +54,7 @@ jobs:
         uses: xu-cheng/latex-action@v2
         with:
           root_file: ${{ env.ROOT_FILES }}
-          working_directory: Dissertation-Proposal-main
+          working_directory: Dissertation-Proposal
           args: -pdf -interaction=nonstopmode -file-line-error
           # Uncomment if needed:
           # latexmk_use_xelatex: true
@@ -63,15 +63,15 @@ jobs:
 
       - name: List produced PDFs
         run: |
-          ls -lh "Dissertation-Proposal-main" || true
-          ls -lh "Dissertation-Proposal-main"/*.pdf || echo "No PDFs found."
+          ls -lh "Dissertation-Proposal || true
+          ls -lh "Dissertation-Proposal"/*.pdf || echo "No PDFs found."
 
       - name: Upload PDFs (artifacts from source folder)
         uses: actions/upload-artifact@v4
         with:
           name: dissertation-pdfs
           path: |
-            Dissertation-Proposal-main/*.pdf
+            Dissertation-Proposal/*.pdf
           if-no-files-found: warn
           retention-days: 14
 
@@ -96,7 +96,7 @@ jobs:
           # Copy newly built PDFs to repo root and build a staged file list
           shopt -s nullglob
           COPIED=()
-          for f in "Dissertation-Proposal-main"/*.pdf; do
+          for f in "Dissertation-Proposal"/*.pdf; do
             base="$(basename "$f")"
             cp -f "$f" "./$base"
             COPIED+=("$base")
