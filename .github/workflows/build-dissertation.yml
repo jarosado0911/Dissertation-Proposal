@@ -1,0 +1,117 @@
+name: Build Dissertation PDFs (to repo root)
+
+on:
+  push:
+    paths:
+      - 'Dissertation-Proposal-main/**.tex'
+      - 'Dissertation-Proposal-main/**.bib'
+      - '**.sty'
+      - '**.cls'
+      - '.github/workflows/build-dissertation.yml'
+  pull_request:
+    paths:
+      - 'Dissertation-Proposal-main/**.tex'
+      - 'Dissertation-Proposal-main/**.bib'
+      - '**.sty'
+      - '**.cls'
+      - '.github/workflows/build-dissertation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-dissertation
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history for safe pushes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      # Find TeX roots under Dissertation-Proposal-main (files that declare \documentclass)
+      - name: Discover LaTeX roots
+        id: discover
+        run: |
+          set -euo pipefail
+          cd "Dissertation-Proposal-main"
+          ROOTS="$(grep -rl --include='*.tex' '^[[:space:]]*\\documentclass' . | sed 's|^\./||')"
+          if [ -z "$ROOTS" ]; then
+            echo "No LaTeX root files found in 'Dissertation-Proposal-main'." >&2
+            exit 1
+          fi
+          printf 'ROOT_FILES<<EOF\n%s\nEOF\n' "$ROOTS" >> "$GITHUB_ENV"
+          echo "Detected roots:"; echo "$ROOTS"
+
+      # Build with latexmk (PDFs land inside Dissertation-Proposal-main/)
+      - name: Compile LaTeX (latexmk)
+        uses: xu-cheng/latex-action@v2
+        with:
+          root_file: ${{ env.ROOT_FILES }}
+          working_directory: Dissertation-Proposal-main
+          args: -pdf -interaction=nonstopmode -file-line-error
+          # Uncomment if needed:
+          # latexmk_use_xelatex: true
+          # latexmk_use_lualatex: true
+          # latexmk_shell_escape: true
+
+      - name: List produced PDFs
+        run: |
+          ls -lh "Dissertation-Proposal-main" || true
+          ls -lh "Dissertation-Proposal-main"/*.pdf || echo "No PDFs found."
+
+      - name: Upload PDFs (artifacts from source folder)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dissertation-pdfs
+          path: |
+            Dissertation-Proposal-main/*.pdf
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Rebase first (with autoStash to avoid 'index contains uncommitted changes'),
+      # then copy PDFs to the repo root (.), stage only those, commit, and push.
+      - name: Commit and push PDFs to repo root
+        if: startsWith(github.ref, 'refs/heads/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Make sure we're up to date without index/worktree conflicts
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git -c rebase.autoStash=true pull --rebase origin "$BRANCH"
+
+          # Copy newly built PDFs to repo root and build a staged file list
+          shopt -s nullglob
+          COPIED=()
+          for f in "Dissertation-Proposal-main"/*.pdf; do
+            base="$(basename "$f")"
+            cp -f "$f" "./$base"
+            COPIED+=("$base")
+          done
+
+          # Stage ONLY the copied PDFs
+          if [ ${#COPIED[@]} -gt 0 ]; then
+            git add -- "${COPIED[@]}"
+          fi
+
+          # Commit only if there are changes
+          if git diff --cached --quiet; then
+            echo "No root-level PDF changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(dissertation): update PDFs at repo root [skip ci]"
+          git push --force-with-lease origin "$BRANCH"
